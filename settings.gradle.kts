@@ -4,4 +4,3 @@ plugins {
 rootProject.name = "qb-updater"
 include("server")
 include("client")
-include("repository")
