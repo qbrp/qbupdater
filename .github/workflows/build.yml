@@ -23,6 +23,10 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Make gradlew executable
+        if: runner.os != 'Windows'
+        run: chmod +x gradlew
+
       - name: Build client
         run: ./gradlew :client:clean :client:build
 
