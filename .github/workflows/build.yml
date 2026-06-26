@@ -22,24 +22,29 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Build jar (Gradle)
-        run: gradle :client:clean :client:build
+      - name: Build client
+        run: ./gradlew :client:clean :client:build
 
-      - name: Run jpackage
-        run: |
-          mkdir dist
-
-      - name: jpackage (Windows)
+      - name: Run jpackage (Windows)
         if: runner.os == 'Windows'
         run: |
-          jpackage --input build/libs --name "qbupdater 2" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type exe --win-shortcut --win-menu
+          jpackage --input client/build/libs --name "qbupdater 2" --icon "client/src/main/resources/lain.ico" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type exe --win-shortcut --win-menu
 
-      - name: jpackage (Linux)
+      - name: Run jpackage (Linux)
         if: runner.os == 'Linux'
         run: |
-          jpackage --input build/libs --name "qbupdater 2" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type deb --linux-shortcut --linux-menu-group Utility
+          jpackage --input client/build/libs --name "qbupdater 2" --icon "client/src/main/resources/lain.ico" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type deb --linux-shortcut --linux-menu-group "Utility"
 
-      - name: jpackage (macOS)
+      - name: Run jpackage (macOS)
         if: runner.os == 'macOS'
         run: |
-          jpackage --input build/libs --name "qbupdater 2" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type pkg
+          jpackage --input client/build/libs --name "qbupdater 2" --icon "client/src/main/resources/lain.ico" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type pkg
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbupdater-${{ runner.os }}
+          path: |
+            **/*.exe
+            **/*.deb
+            **/*.pkg
