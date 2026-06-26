@@ -1,0 +1,45 @@
+name: Build with jpackage
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Build jar (Gradle)
+        run: gradle :client:clean :client:build
+
+      - name: Run jpackage
+        run: |
+          mkdir dist
+
+      - name: jpackage (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          jpackage --input build/libs --name "qbupdater 2" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type exe --win-shortcut --win-menu
+
+      - name: jpackage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          jpackage --input build/libs --name "qbupdater 2" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type deb --linux-shortcut --linux-menu-group Utility
+
+      - name: jpackage (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          jpackage --input build/libs --name "qbupdater 2" --main-jar qbupdater.jar --main-class org.lain.qbupdater.QbUpdater --type pkg
