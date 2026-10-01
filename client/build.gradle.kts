@@ -7,6 +7,17 @@ plugins {
 group = "org.lain.qbupdater"
 version = "3.0"
 
+val getdownVersion = "2.0.1"
+val getdownLauncher by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+    isTransitive = false
+}
+val bootstrapRuntime by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
 repositories {
     mavenCentral()
 }
@@ -16,6 +27,10 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    getdownLauncher(
+        "io.github.bekoenig.getdown:getdown-launcher:$getdownVersion:jar-with-dependencies"
+    )
+    bootstrapRuntime(kotlin("stdlib"))
 }
 
 launch4j {
@@ -32,6 +47,65 @@ tasks.shadowJar {
         attributes["Main-Class"] = "org.lain.qbupdater.QbUpdater"
     }
     mergeServiceFiles()
+}
+
+val bootstrapJar by tasks.registering(Jar::class) {
+    group = "distribution"
+    description = "Builds the small launcher that starts Getdown"
+    dependsOn(tasks.classes)
+
+    archiveFileName.set("bootstrap.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("bootstrap"))
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from(sourceSets.main.get().output) {
+        include("org/lain/qbupdater/Bootstrap*.class")
+    }
+    from(bootstrapRuntime.map { dependency ->
+        if (dependency.isDirectory) dependency else zipTree(dependency)
+    })
+    manifest {
+        attributes["Main-Class"] = "org.lain.qbupdater.Bootstrap"
+    }
+}
+
+val getdownDistributionDir = layout.buildDirectory.dir("getdown")
+
+val prepareGetdownDistribution by tasks.registering(Sync::class) {
+    group = "distribution"
+    description = "Prepares application files that Getdown will download"
+    dependsOn(tasks.shadowJar)
+
+    from(tasks.shadowJar.flatMap { it.archiveFile }) {
+        rename { "qbupdater.jar" }
+    }
+    from("src/getdown/getdown.txt")
+    into(getdownDistributionDir)
+}
+
+val generateGetdownDigests by tasks.registering(JavaExec::class) {
+    group = "distribution"
+    description = "Generates digest.txt and digest2.txt for the Getdown release"
+    dependsOn(prepareGetdownDistribution)
+
+    classpath = getdownLauncher
+    mainClass.set("io.github.bekoenig.getdown.tools.Digester")
+    args(getdownDistributionDir.get().asFile.absolutePath)
+
+    inputs.files(
+        getdownDistributionDir.map { it.file("getdown.txt") },
+        getdownDistributionDir.map { it.file("qbupdater.jar") }
+    )
+    outputs.files(
+        getdownDistributionDir.map { it.file("digest.txt") },
+        getdownDistributionDir.map { it.file("digest2.txt") }
+    )
+}
+
+tasks.register("getdownDistribution") {
+    group = "distribution"
+    description = "Builds the files to upload to a GitHub release"
+    dependsOn(generateGetdownDigests)
 }
 
 kotlin {
@@ -57,21 +131,70 @@ val javaToolchains = extensions.getByType<JavaToolchainService>()
 val packagingJdk = javaToolchains.launcherFor {
     languageVersion.set(JavaLanguageVersion.of(21))
 }
+val runtimeImageDir = layout.buildDirectory.dir("jpackage/runtime-image")
+val runtimeModules = listOf(
+    "java.base",
+    "java.desktop",
+    "java.instrument",
+    "java.logging",
+    "java.naming",
+    "java.prefs",
+    "java.scripting",
+    "jdk.charsets",
+    "jdk.crypto.ec",
+    "jdk.localedata",
+    "jdk.unsupported"
+).joinToString(",")
+
+val prepareRuntimeImage by tasks.registering(Exec::class) {
+    group = "distribution"
+    description = "Builds a runtime image that keeps the Java launcher required by Getdown"
+
+    inputs.property("modules", runtimeModules)
+    outputs.dir(runtimeImageDir)
+
+    doFirst {
+        val outputDir = runtimeImageDir.get().asFile
+        project.delete(outputDir)
+
+        val jdkHome = packagingJdk.get().metadata.installationPath.asFile
+        val jlinkExecutable = jdkHome.resolve(
+            if (isWindows) "bin/jlink.exe" else "bin/jlink"
+        )
+        check(jlinkExecutable.isFile) {
+            "jlink was not found in Java 21 toolchain: $jlinkExecutable"
+        }
+
+        commandLine(
+            jlinkExecutable.absolutePath,
+            "--add-modules", runtimeModules,
+            "--strip-debug",
+            "--no-header-files",
+            "--no-man-pages",
+            "--output", outputDir.absolutePath
+        )
+    }
+}
 
 val prepareJpackage by tasks.registering(Sync::class) {
     group = "distribution"
-    description = "Prepares the fat JAR for jpackage"
-    dependsOn(tasks.shadowJar)
-    from(tasks.shadowJar.flatMap { it.archiveFile })
+    description = "Prepares Bootstrap and Getdown for jpackage"
+    dependsOn(bootstrapJar)
+    from(bootstrapJar.flatMap { it.archiveFile })
+    from(getdownLauncher) {
+        rename { "getdown.jar" }
+    }
     into(jpackageInputDir)
 }
 
 tasks.register<Exec>("jpackage") {
     group = "distribution"
     description = "Builds a native package (override with -PpackageType=app-image|exe|msi|dmg|pkg|deb|rpm)"
-    dependsOn(prepareJpackage)
+    dependsOn(prepareJpackage, prepareRuntimeImage)
 
-    inputs.file(tasks.shadowJar.flatMap { it.archiveFile })
+    inputs.file(bootstrapJar.flatMap { it.archiveFile })
+    inputs.files(getdownLauncher)
+    inputs.dir(runtimeImageDir)
     inputs.property("packageType", packageType)
     inputs.property("packageVersion", packageVersion)
     outputs.dir(jpackageOutputDir)
@@ -108,11 +231,12 @@ tasks.register<Exec>("jpackage") {
             "--input", jpackageInputDir.get().asFile.absolutePath,
             "--dest", outputDir.absolutePath,
             "--name", "qbupdater",
-            "--main-jar", tasks.shadowJar.get().archiveFileName.get(),
-            "--main-class", "org.lain.qbupdater.QbUpdater",
+            "--main-jar", "bootstrap.jar",
+            "--main-class", "org.lain.qbupdater.Bootstrap",
             "--app-version", packageVersion.get(),
             "--description", "Minecraft modpack updater",
             "--vendor", "Lain",
+            "--runtime-image", runtimeImageDir.get().asFile.absolutePath,
             "--java-options", "-Dfile.encoding=UTF-8"
         )
 
