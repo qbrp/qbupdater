@@ -1,11 +1,21 @@
 package org.lain.qbupdater
 
 import java.io.File
-import java.nio.file.Files
-import java.time.Instant
-import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+
+fun fetchEngineVersion(gamePath: File): String? {
+    val modsDirectory = gamePath.resolve("mods")
+    if (!modsDirectory.exists()) {
+        return null
+    }
+    val engineFileName = modsDirectory.list()
+        ?.firstOrNull { it.startsWith("engine") }
+        ?: return null
+    val parts = engineFileName.split("-")
+    val version = parts[1]
+    return version.replace("+", "_")
+}
 
 fun backupOptions(gamePath: File) {
     val options = gamePath.resolve("options.txt")
@@ -25,19 +35,18 @@ fun backupOptions(gamePath: File) {
 
 fun showGameFolderWarn(gamePath: File): Boolean {
     val options = gamePath.resolve("options.txt")
-    val logs = gamePath.resolve("logs")
-    return !options.exists() || !(logs.exists() && logs.isDirectory)
+    val versions = gamePath.resolve("versions")
+    return !options.exists() || !(versions.exists() && versions.isDirectory)
 }
 
-fun fetchVersion(gamePath: File): String {
+fun fetchVersion(gamePath: File): String? {
     val versionFile = File(gamePath, "qbupdater.version")
     return if (!versionFile.exists()) {
         versionFile.createNewFile()
-        "none"
+        null
     } else {
-        versionFile.readText().trim()
+        versionFile.readText().trim().takeIf { it.isNotEmpty() }
     }
-        .ifBlank { "none" }
 }
 
 fun isMinecraftRunning(): Boolean {

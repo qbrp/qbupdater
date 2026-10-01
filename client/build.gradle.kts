@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "org.lain.qbupdater"
-version = "3.0"
+version = "2.1.2"
 
 val getdownVersion = "2.0.1"
 val getdownLauncher by configurations.creating {
@@ -27,6 +27,7 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.12")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
     getdownLauncher(
         "io.github.bekoenig.getdown:getdown-launcher:$getdownVersion:jar-with-dependencies"
     )

@@ -79,6 +79,7 @@ data class RequiredUpdates(val modpackVersion: String, val hosts: List<String>) 
  */
 fun requestUpdates(version: String): RequiredUpdates? {
     val host = "https://drive.qbrp.fun/update?version={}"
+    //val host = "http://localhost:8080/update?version={}"
     val (statusCode, response) = try {
         val connection = URL(host.replace("{}", version))
             .openConnection() as HttpURLConnection

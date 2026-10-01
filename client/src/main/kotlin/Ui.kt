@@ -4,8 +4,13 @@ import com.formdev.flatlaf.FlatDarkLaf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.swing.Swing
+import kotlinx.coroutines.withContext
 import java.awt.*
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import java.awt.image.BufferedImage
 import java.io.File
 import java.io.IOException
@@ -177,96 +182,106 @@ fun setupWindow() {
     }
 
     updateButton.addActionListener {
-        val gamePathStr = pathField.text.trim()
-        if (gamePathStr.isBlank()) {
-            JOptionPane.showMessageDialog(
-                frame,
-                "Выберите папку игры"
-            )
-            return@addActionListener
-        }
-
-        val gamePath = runCatching { File(gamePathStr) }
-            .onFailure { JOptionPane.showMessageDialog(frame, "Введён неправильный путь") }
-            .getOrNull() ?: return@addActionListener
-
-        if (showGameFolderWarn(gamePath)) {
-            val options = arrayOf("Продолжить", "Выбрать другую папку")
-
-            val result = JOptionPane.showOptionDialog(
-                frame,
-                "В указанной директории не установлен Minecraft. Если вы уверены, что выбрали правильную папку, нажмите 'Продолжить'",
-                "Предупреждение",
-                JOptionPane.DEFAULT_OPTION,
-                JOptionPane.WARNING_MESSAGE,
-                null,
-                options,
-                options[0]
-            )
-            if (result == 1 || result == JOptionPane.CLOSED_OPTION) {
-                return@addActionListener
+        val windowScope = CoroutineScope(SupervisorJob() + Dispatchers.Swing)
+        updateProcess = windowScope.launch {
+            val gamePathStr = pathField.text.trim()
+            if (gamePathStr.isBlank()) {
+                JOptionPane.showMessageDialog(
+                    frame,
+                    "Выберите папку игры"
+                )
+                return@launch
             }
-        }
 
+            val gamePath = runCatching { File(gamePathStr) }
+                .onFailure { JOptionPane.showMessageDialog(frame, "Введён неправильный путь") }
+                .getOrNull() ?: return@launch
 
-        saveGamePath(gamePathStr)
+            val (version, gameNotInstalled) = withContext(Dispatchers.IO) {
+                val version = fetchVersion(gamePath) ?: runCatching { fetchEngineVersion(gamePath) }.getOrNull()
+                version to showGameFolderWarn(gamePath)
+            }
 
-        if (isMinecraftRunning()) {
-            JOptionPane.showMessageDialog(
-                frame,
-                "Перед обновлением закройте Minecraft"
-            )
-            return@addActionListener
-        }
+            if (version == null) {
+                val result = if (gameNotInstalled) {
+                    val options = arrayOf("Продолжить", "Выбрать другую папку")
 
-        progressBar.isIndeterminate = true
-
-        buttonPanel.remove(updateButton)
-        buttonPanel.add(cancelButton)
-        buttonPanel.revalidate()
-        buttonPanel.repaint()
-
-        updateProcess = CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val version = fetchVersion(gamePath)
-                val updates = requestUpdates(version) ?: run {
-                    SwingUtilities.invokeLater {
-                        JOptionPane.showMessageDialog(frame, "Обновление не требуется")
-                    }
+                    JOptionPane.showOptionDialog(
+                        frame,
+                        "В указанной директории не установлен Minecraft. Если вы уверены, что выбрали правильную папку, нажмите 'Продолжить'",
+                        "Предупреждение",
+                        JOptionPane.DEFAULT_OPTION,
+                        JOptionPane.WARNING_MESSAGE,
+                        null,
+                        options,
+                        options[0]
+                    )
+                } else {
+                    JOptionPane.showConfirmDialog(
+                        frame,
+                        "Не удалось определить версию сборки qbrp, вследствие чего будет установлена последняя её версия. Некоторые файлы могут быть перезписаны",
+                        "Установка с нуля",
+                        JOptionPane.DEFAULT_OPTION,
+                        JOptionPane.WARNING_MESSAGE,
+                    )
+                }
+                if (result == 1 || result == JOptionPane.CLOSED_OPTION) {
                     return@launch
                 }
+            }
+            val resolvedVersion = version ?: "none"
+
+            saveGamePath(gamePathStr)
+
+            if (isMinecraftRunning()) {
+                JOptionPane.showMessageDialog(
+                    frame,
+                    "Перед обновлением закройте Minecraft"
+                )
+                return@launch
+            }
+
+            progressBar.isIndeterminate = true
+
+            buttonPanel.remove(updateButton)
+            buttonPanel.add(cancelButton)
+            buttonPanel.revalidate()
+            buttonPanel.repaint()
+
+            try {
+                val updates = withContext(Dispatchers.IO) { requestUpdates(resolvedVersion) }
+                    ?: run {
+                        JOptionPane.showMessageDialog(frame, "Обновление не требуется")
+                        return@launch
+                    }
+
                 if (backupCheckbox.isSelected) {
                     println("Резервное копирование файлов")
-                    backupOptions(gamePath)
+                    withContext(Dispatchers.IO) { backupOptions(gamePath) }
                 }
-                val hasErrors = requestDownloadUpdate(
-                    gamePath,
-                    updates,
-                    progressListener =  { percent -> progressBar.value = percent },
-                )
+                val hasErrors = withContext(Dispatchers.IO) {
+                    requestDownloadUpdate(
+                        gamePath,
+                        updates,
+                        progressListener = { percent -> progressBar.value = percent },
+                    )
+                }
                 if (hasErrors) {
-                    SwingUtilities.invokeLater {
-                        JOptionPane.showMessageDialog(
-                            frame,
-                            "Во время установки некоторые файлы были пропущены или возникли ошибки удаления. Проверьте журнал"
-                        )
-                    }
+                    JOptionPane.showMessageDialog(
+                        frame,
+                        "Во время установки некоторые файлы были пропущены или возникли ошибки удаления. Проверьте журнал"
+                    )
                 }
             } catch (e: CancellationException) {
 
             } catch (e: Exception) {
-                SwingUtilities.invokeLater {
-                    JOptionPane.showMessageDialog(frame, e.message, "Ошибка", JOptionPane.ERROR_MESSAGE)
-                }
+                JOptionPane.showMessageDialog(frame, e.message, "Ошибка", JOptionPane.ERROR_MESSAGE)
             } finally {
-                SwingUtilities.invokeLater {
-                    progressBar.isIndeterminate = false
-                    setButtonStateBeforeDownload()
-                }
+                progressBar.isIndeterminate = false
+                setButtonStateBeforeDownload()
             }
         }
     }
-
 
     cancelButton.addActionListener {
         updateProcess?.cancel() ?: return@addActionListener
@@ -295,6 +310,12 @@ fun setupWindow() {
     )
     System.setOut(stream)
     System.setErr(stream)
+
+    frame.addWindowListener(object : WindowAdapter() {
+        override fun windowClosing(e: WindowEvent) {
+            saveBackupCheckbox(backupCheckbox.isSelected)
+        }
+    })
 
     frame.isVisible = true
 }
