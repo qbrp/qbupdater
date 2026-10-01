@@ -2,12 +2,10 @@ package org.lain.qbupdater
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
@@ -32,25 +30,25 @@ suspend fun download(url: String, file: File, progressListener: ProgressListener
     val connection = ftpUrl.openConnection()
     connection.connectTimeout = 3500
     connection.readTimeout = 3500
-    val stream = connection.getInputStream()
-    launch {
-        stream.use { input ->
-            val contentLength = connection.contentLength.toLong()
-            FileOutputStream(file).use { output ->
-                val buffer = ByteArray(8192)
-                var totalRead = 0L
-                var bytesRead: Int
+    connection.getInputStream().use { input ->
+        val progress = ProgressReporter(connection.contentLengthLong, progressListener)
+        progress.start()
 
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    ensureActive()
-                    output.write(buffer, 0, bytesRead)
-                    totalRead += bytesRead
-                    progressListener.use(totalRead, contentLength)
-                }
+        FileOutputStream(file).use { output ->
+            val buffer = ByteArray(8192)
+            var totalRead = 0L
+            var bytesRead: Int
+
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                ensureActive()
+                output.write(buffer, 0, bytesRead)
+                totalRead += bytesRead
+                progress.update(totalRead)
             }
         }
+
+        progress.complete()
     }
-    stream
 }
 
 fun <T> handleServerResponse(statement: () -> T) = runCatching { statement() }
@@ -153,11 +151,7 @@ suspend fun requestDownloadUpdate(
     }
 
     val gameDirectory = Paths.get(gamePath.path).toRealPath().toFile()
-    val sevenZFileExtract = SevenZFile.builder()
-        .setPath(downloadFile.toPath())
-        .get()
     var processed = 0
-    var entry = sevenZFileExtract.getNextEntry()
     val skipped = mutableListOf<String>()
     val errors = mutableListOf<String>()
 
@@ -165,37 +159,62 @@ suspend fun requestDownloadUpdate(
     if (rootOutput.exists()) { rootOutput.deleteRecursively() }
     rootOutput.mkdirs()
 
-    while (entry != null) {
-        val output = File(rootOutput, entry.name).canonicalFile
-        if (!output.toPath().startsWith(rootOutput.toPath())) {
-            skipped += output.path
-            entry = sevenZFileExtract.getNextEntry()
-            continue
-        }
+    println("Распаковка архива")
+    SevenZFile.builder()
+        .setPath(downloadFile.toPath())
+        .get()
+        .use { sevenZFileExtract ->
+            val totalExtractSize = sevenZFileExtract.entries
+                .asSequence()
+                .filterNot { it.isDirectory }
+                .sumOf { it.size.coerceAtLeast(0L) }
+            val extractProgress = ProgressReporter(totalExtractSize, progressListener)
+            var extractedSize = 0L
+            var entry = sevenZFileExtract.getNextEntry()
 
-        if (entry.isDirectory) {
-            println("[+] ${entry.name}")
-            entry = sevenZFileExtract.getNextEntry()
-            continue
-        }
-        output.parentFile?.mkdirs()
+            extractProgress.start()
 
-        FileOutputStream(output).use { writer ->
-            val buffer = ByteArray(8192)
-            var bytesRead: Int
+            while (entry != null) {
+                ensureActive()
 
-            while (sevenZFileExtract.read(buffer).also { bytesRead = it } != -1) {
-                writer.write(buffer, 0, bytesRead)
+                val output = File(rootOutput, entry.name).canonicalFile
+                if (!output.toPath().startsWith(rootOutput.toPath())) {
+                    skipped += output.path
+                    extractedSize += entry.size.coerceAtLeast(0L)
+                    extractProgress.update(extractedSize)
+                    entry = sevenZFileExtract.getNextEntry()
+                    continue
+                }
+
+                if (entry.isDirectory) {
+                    println("[+] ${entry.name}")
+                    entry = sevenZFileExtract.getNextEntry()
+                    continue
+                }
+                output.parentFile?.mkdirs()
+
+                FileOutputStream(output).use { writer ->
+                    val buffer = ByteArray(8192)
+                    var bytesRead: Int
+
+                    while (sevenZFileExtract.read(buffer).also { bytesRead = it } != -1) {
+                        ensureActive()
+                        writer.write(buffer, 0, bytesRead)
+                        extractedSize += bytesRead
+                        extractProgress.update(extractedSize)
+                    }
+                }
+
+                processed++
+                entry = sevenZFileExtract.getNextEntry()
             }
+
+            extractProgress.complete()
         }
 
-        processed++
-        entry = sevenZFileExtract.getNextEntry()
-    }
-
-    sevenZFileExtract.close()
+    progressListener(UpdateProgress.ApplyingFiles)
     downloadFile.delete()
-    println("Файлы разархивированы")
+    println("Файлы распакованы")
 
     Files.walk(rootOutput.toPath()).use { paths ->
         paths
@@ -257,12 +276,43 @@ suspend fun requestDownloadUpdate(
 
     versionFile.writeText(modpackVersion)
     println("Обновление модпака завершено")
+    progressListener(UpdateProgress.Determinate(100))
     failed
 }
 
-typealias ProgressListener = (Int) -> Unit
+sealed interface UpdateProgress {
+    data class Determinate(val percent: Int) : UpdateProgress
+    data object ApplyingFiles : UpdateProgress
+}
 
-fun ProgressListener.use(current: Long, total: Long) {
-    val percent = (current * 100 / total).toInt()
-    invoke(percent)
+typealias ProgressListener = (UpdateProgress) -> Unit
+
+private class ProgressReporter(
+    private val total: Long,
+    private val listener: ProgressListener,
+) {
+    private var lastPercent = -1
+
+    fun start() {
+        report(0)
+    }
+
+    fun update(current: Long) {
+        if (total <= 0L) return
+
+        val percent = ((current.coerceIn(0L, total).toDouble() / total) * 100)
+            .toInt()
+        report(percent)
+    }
+
+    fun complete() {
+        report(100)
+    }
+
+    private fun report(percent: Int) {
+        if (percent == lastPercent) return
+
+        lastPercent = percent
+        listener(UpdateProgress.Determinate(percent))
+    }
 }

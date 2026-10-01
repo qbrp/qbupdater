@@ -174,6 +174,7 @@ fun setupWindow() {
 
     fun setButtonStateBeforeDownload() {
         progressBar.isIndeterminate = false
+        progressBar.string = null
 
         buttonPanel.remove(cancelButton)
         buttonPanel.add(updateButton)
@@ -259,11 +260,28 @@ fun setupWindow() {
                     println("Резервное копирование файлов")
                     withContext(Dispatchers.IO) { backupOptions(gamePath) }
                 }
+                progressBar.isIndeterminate = false
+                progressBar.value = 0
                 val hasErrors = withContext(Dispatchers.IO) {
                     requestDownloadUpdate(
                         gamePath,
                         updates,
-                        progressListener = { percent -> progressBar.value = percent },
+                        progressListener = { progress ->
+                            SwingUtilities.invokeLater {
+                                when (progress) {
+                                    is UpdateProgress.Determinate -> {
+                                        progressBar.isIndeterminate = false
+                                        progressBar.value = progress.percent
+                                        progressBar.string = null
+                                    }
+
+                                    UpdateProgress.ApplyingFiles -> {
+                                        progressBar.isIndeterminate = true
+                                        progressBar.string = "Установка..."
+                                    }
+                                }
+                            }
+                        },
                     )
                 }
                 if (hasErrors) {
