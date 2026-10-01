@@ -1,0 +1,10 @@
+# Files from the latest non-prerelease GitHub release are served from this URL.
+appbase = https://github.com/qbrp/qbupdater/releases/latest/download/
+allow_offline = true
+
+ui.name = qbupdater
+ui.install_error = https://github.com/qbrp/qbupdater/issues
+
+code = qbupdater.jar
+class = org.lain.qbupdater.QbUpdater
+jvmarg = -Dfile.encoding=UTF-8
