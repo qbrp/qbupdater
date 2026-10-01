@@ -5,12 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import java.awt.BorderLayout
-import java.awt.Dimension
-import java.awt.Font
-import java.awt.Graphics
-import java.awt.Graphics2D
-import java.awt.RenderingHints
+import java.awt.*
 import java.awt.image.BufferedImage
 import java.io.File
 import java.io.IOException
@@ -75,7 +70,7 @@ fun setupWindow() {
     frame.setSize(600, 500)
     frame.isResizable = false
     frame.setLocationRelativeTo(null)
-    frame.iconImage = loadImage("lain.ico")
+    frame.iconImage = loadImage("lain.png")
 
     val image = loadImage("pc.png")
 
@@ -139,6 +134,9 @@ fun setupWindow() {
         "Журнал"
     )
 
+    val backupCheckbox = JCheckBox("Создавать резервную копию config и options.txt перед применением обновления")
+    backupCheckbox.isSelected = restoreBackupCheckbox()
+
     val pathPanel = JPanel(BorderLayout(8, 0))
     pathPanel.add(pathField, BorderLayout.CENTER)
     pathPanel.add(browseButton, BorderLayout.EAST)
@@ -158,6 +156,7 @@ fun setupWindow() {
 
     root.add(controlsPanel, BorderLayout.NORTH)
     root.add(scrollPane, BorderLayout.CENTER)
+    root.add(backupCheckbox, BorderLayout.SOUTH)
 
     controlsPanel.isOpaque = false
     pathPanel.isOpaque = false
@@ -186,10 +185,39 @@ fun setupWindow() {
             )
             return@addActionListener
         }
+
         val gamePath = runCatching { File(gamePathStr) }
             .onFailure { JOptionPane.showMessageDialog(frame, "Введён неправильный путь") }
             .getOrNull() ?: return@addActionListener
+
+        if (showGameFolderWarn(gamePath)) {
+            val options = arrayOf("Продолжить", "Выбрать другую папку")
+
+            val result = JOptionPane.showOptionDialog(
+                frame,
+                "В указанной директории не установлен Minecraft. Если вы уверены, что выбрали правильную папку, нажмите 'Продолжить'",
+                "Предупреждение",
+                JOptionPane.DEFAULT_OPTION,
+                JOptionPane.WARNING_MESSAGE,
+                null,
+                options,
+                options[0]
+            )
+            if (result == 1 || result == JOptionPane.CLOSED_OPTION) {
+                return@addActionListener
+            }
+        }
+
+
         saveGamePath(gamePathStr)
+
+        if (isMinecraftRunning()) {
+            JOptionPane.showMessageDialog(
+                frame,
+                "Перед обновлением закройте Minecraft"
+            )
+            return@addActionListener
+        }
 
         progressBar.isIndeterminate = true
 
@@ -202,12 +230,20 @@ fun setupWindow() {
             try {
                 val version = fetchVersion(gamePath)
                 val updates = requestUpdates(version) ?: run {
-                    JOptionPane.showMessageDialog(frame, "Обновление не требуется")
+                    SwingUtilities.invokeLater {
+                        JOptionPane.showMessageDialog(frame, "Обновление не требуется")
+                    }
                     return@launch
                 }
-                val hasErrors = requestDownloadUpdate(gamePath, updates) { percent ->
-                    progressBar.value = percent
+                if (backupCheckbox.isSelected) {
+                    println("Резервное копирование файлов")
+                    backupOptions(gamePath)
                 }
+                val hasErrors = requestDownloadUpdate(
+                    gamePath,
+                    updates,
+                    progressListener =  { percent -> progressBar.value = percent },
+                )
                 if (hasErrors) {
                     SwingUtilities.invokeLater {
                         JOptionPane.showMessageDialog(
@@ -220,7 +256,7 @@ fun setupWindow() {
 
             } catch (e: Exception) {
                 SwingUtilities.invokeLater {
-                    JOptionPane.showMessageDialog(frame, e.message)
+                    JOptionPane.showMessageDialog(frame, e.message, "Ошибка", JOptionPane.ERROR_MESSAGE)
                 }
             } finally {
                 SwingUtilities.invokeLater {

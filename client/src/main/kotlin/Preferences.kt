@@ -8,6 +8,14 @@ fun restoreGamePath(): String? {
     return PREFERENCES.get("game_path", null)
 }
 
+fun restoreBackupCheckbox(): Boolean {
+    return PREFERENCES.getBoolean("do_backup", false)
+}
+
 fun saveGamePath(path: String) {
     PREFERENCES.put("game_path", path)
+}
+
+fun saveBackupCheckbox(value: Boolean) {
+    PREFERENCES.putBoolean("do_backup", value)
 }

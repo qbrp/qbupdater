@@ -8,10 +8,13 @@ import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import kotlin.coroutines.cancellation.CancellationException
 
 data class UpdaterException(override val message: String, override val cause: Throwable) : Exception()
@@ -23,7 +26,7 @@ fun writeError(logPath: File, e: Exception, file: String) {
     logfile.writeText(e.stackTraceToString())
 }
 
-suspend fun download(url: String, file: File, progressListener: ProgressListener): InputStream = withContext(Dispatchers.IO) {
+suspend fun download(url: String, file: File, progressListener: ProgressListener) = withContext(Dispatchers.IO) {
     println("Скачивание файла по $url")
     val ftpUrl = handleServerResponse { URI(url).toURL() }
     val connection = ftpUrl.openConnection()
@@ -70,24 +73,12 @@ data class RequiredUpdates(val modpackVersion: String, val hosts: List<String>) 
         }
     }
 }
-
-fun fetchVersion(gamePath: File): String {
-    val versionFile = File(gamePath, "qbupdater.version")
-    return if (!versionFile.exists()) {
-        versionFile.createNewFile()
-        "none"
-    } else {
-        versionFile.readText().trim()
-    }
-        .ifBlank { "none" }
-}
-
 /**
  * @return Возвращает null, если обновлений нет или сервер неактивен
  * @throws UpdaterException при невалидном ответе
  */
 fun requestUpdates(version: String): RequiredUpdates? {
-    val host = "https://drive.qbrp.online/update?version={}"
+    val host = "https://drive.qbrp.fun/update?version={}"
     val (statusCode, response) = try {
         val connection = URL(host.replace("{}", version))
             .openConnection() as HttpURLConnection
@@ -103,20 +94,22 @@ fun requestUpdates(version: String): RequiredUpdates? {
             connection.errorStream?.bufferedReader()?.readText().orEmpty()
         }
 
+        println("Получен ответ от сервера: $statusCode ($body)")
+
         statusCode to body
     } catch (e: Throwable) {
         throw UpdaterException("Не удалось подключиться к серверу", e)
     }
-    println("Получен ответ от сервера: $statusCode")
-    return if (statusCode != 200) {
-        println("Невозможно обработать ответ от сервера.")
-        null
-    } else if (response == "up-to-date") {
-        println("Обновления не требуются")
-        null
-    } else {
-        RequiredUpdates.of(response)
+
+    if (statusCode != 200) {
+        error("Сервер отправил код ответа: $statusCode")
     }
+
+    if (response == "up-to-date") {
+        return null
+    }
+
+    return RequiredUpdates.of(response)
 }
 
 /**
@@ -125,8 +118,8 @@ fun requestUpdates(version: String): RequiredUpdates? {
 suspend fun requestDownloadUpdate(
     gamePath: File,
     updates: RequiredUpdates,
-    progressListener: ProgressListener
-): Boolean {
+    progressListener: ProgressListener,
+): Boolean = withContext(Dispatchers.IO) {
     val (modpackVersion, hosts) = updates
 
     val logPath = File(gamePath, "logs")
@@ -157,6 +150,7 @@ suspend fun requestDownloadUpdate(
             hostIndex++
         }
     }
+
     val gameDirectory = Paths.get(gamePath.path).toRealPath().toFile()
     val sevenZFileExtract = SevenZFile.builder()
         .setPath(downloadFile.toPath())
@@ -166,38 +160,60 @@ suspend fun requestDownloadUpdate(
     val skipped = mutableListOf<String>()
     val errors = mutableListOf<String>()
 
+    val rootOutput = File(gameDirectory, ".update")
+    if (rootOutput.exists()) { rootOutput.deleteRecursively() }
+    rootOutput.mkdirs()
+
     while (entry != null) {
-        val output = File(gameDirectory, entry.name).canonicalFile
-        if (!output.toPath().startsWith(gameDirectory.toPath())) {
+        val output = File(rootOutput, entry.name).canonicalFile
+        if (!output.toPath().startsWith(rootOutput.toPath())) {
             skipped += output.path
             entry = sevenZFileExtract.getNextEntry()
             continue
         }
 
         if (entry.isDirectory) {
+            println("[+] ${entry.name}")
             entry = sevenZFileExtract.getNextEntry()
             continue
         }
         output.parentFile?.mkdirs()
 
-        withContext(Dispatchers.IO) {
-            FileOutputStream(output).use { writer ->
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
+        FileOutputStream(output).use { writer ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
 
-                while (sevenZFileExtract.read(buffer).also { bytesRead = it } != -1) {
-                    writer.write(buffer, 0, bytesRead)
-                }
+            while (sevenZFileExtract.read(buffer).also { bytesRead = it } != -1) {
+                writer.write(buffer, 0, bytesRead)
             }
         }
 
         processed++
-        println("[+] ${entry.name}")
         entry = sevenZFileExtract.getNextEntry()
     }
 
+    sevenZFileExtract.close()
     downloadFile.delete()
-    println("Файлы разархивированы.")
+    println("Файлы разархивированы")
+
+    Files.walk(rootOutput.toPath()).use { paths ->
+        paths
+            .filter { Files.isRegularFile(it) }
+            .forEach { source ->
+                val relative = rootOutput.toPath().relativize(source)
+                val target = gameDirectory.toPath().resolve(relative)
+
+                Files.createDirectories(target.parent)
+
+                Files.move(
+                    source,
+                    target,
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+    }
+    rootOutput.deleteRecursively()
+    println("Файлы применены")
 
     val deletionsFile = File(gamePath, ".deleted")
     if (deletionsFile.exists()) {
@@ -212,13 +228,17 @@ suspend fun requestDownloadUpdate(
                 }
                 println("[-] $line")
 
-                val result = if (fileToDelete.isDirectory) {
-                    fileToDelete.deleteRecursively()
-                } else {
-                    fileToDelete.delete()
-                }
-                if (!result) {
+                try {
+                    if (fileToDelete.isDirectory) {
+                        if (!fileToDelete.deleteRecursively()) {
+                            throw IOException("deleteRecursively() returned false")
+                        }
+                    } else {
+                        Files.delete(fileToDelete.toPath())
+                    }
+                } catch (e: Exception) {
                     errors += fileToDelete.path
+                    println("[!] Не удалось удалить ${fileToDelete.path}: ${e.message}")
                 }
             }
         }
@@ -228,9 +248,15 @@ suspend fun requestDownloadUpdate(
     errors.forEach { println("[!] Не удалось удалить $it") }
     skipped.forEach { println("[!] Пропущен $it") }
 
+    val failed = errors.isNotEmpty() || skipped.isNotEmpty()
+
+    if (!failed) {
+        versionFile.writeText(modpackVersion)
+    }
+
     versionFile.writeText(modpackVersion)
     println("Обновление модпака завершено")
-    return errors.isNotEmpty() || skipped.isNotEmpty()
+    failed
 }
 
 typealias ProgressListener = (Int) -> Unit
