@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "org.lain.qbupdater"
-version = "2.1.2"
+version = "2.2.4"
 
 val getdownVersion = "2.0.1"
 val getdownLauncher by configurations.creating {
