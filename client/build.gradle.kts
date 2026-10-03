@@ -28,6 +28,8 @@ dependencies {
     implementation("org.tukaani:xz:1.12")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    testImplementation(kotlin("test"))
     getdownLauncher(
         "io.github.bekoenig.getdown:getdown-launcher:$getdownVersion:jar-with-dependencies"
     )
@@ -111,6 +113,10 @@ tasks.register("getdownDistribution") {
 
 kotlin {
     jvmToolchain(21)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 val osName = System.getProperty("os.name").lowercase()

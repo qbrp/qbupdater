@@ -87,16 +87,13 @@ fun setupWindow() {
             super.paintComponent(g)
             g as Graphics2D
             g.setRenderingHint(
-                RenderingHints.KEY_INTERPOLATION,
-                RenderingHints.VALUE_INTERPOLATION_BILINEAR
+                RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR
             )
             g.setRenderingHint(
-                RenderingHints.KEY_RENDERING,
-                RenderingHints.VALUE_RENDER_QUALITY
+                RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY
             )
             g.setRenderingHint(
-                RenderingHints.KEY_ANTIALIASING,
-                RenderingHints.VALUE_ANTIALIAS_ON
+                RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON
             )
             g.drawImage(image, 0, 0, getWidth(), getHeight(), this)
         }
@@ -148,8 +145,7 @@ fun setupWindow() {
 
     val controlsPanel = JPanel()
     controlsPanel.layout = BoxLayout(
-        controlsPanel,
-        BoxLayout.Y_AXIS
+        controlsPanel, BoxLayout.Y_AXIS
     )
 
     controlsPanel.add(pathPanel)
@@ -188,15 +184,17 @@ fun setupWindow() {
             val gamePathStr = pathField.text.trim()
             if (gamePathStr.isBlank()) {
                 JOptionPane.showMessageDialog(
-                    frame,
-                    "Выберите папку игры"
+                    frame, "Выберите папку игры"
                 )
                 return@launch
             }
 
-            val gamePath = runCatching { File(gamePathStr) }
-                .onFailure { JOptionPane.showMessageDialog(frame, "Введён неправильный путь") }
-                .getOrNull() ?: return@launch
+            val gamePath = runCatching { File(gamePathStr) }.onFailure {
+                    JOptionPane.showMessageDialog(
+                        frame,
+                        "Введён неправильный путь"
+                    )
+                }.getOrNull() ?: return@launch
 
             val (version, gameNotInstalled) = withContext(Dispatchers.IO) {
                 val version = fetchVersion(gamePath) ?: runCatching { fetchEngineVersion(gamePath) }.getOrNull()
@@ -236,8 +234,7 @@ fun setupWindow() {
 
             if (isMinecraftRunning()) {
                 JOptionPane.showMessageDialog(
-                    frame,
-                    "Перед обновлением закройте Minecraft"
+                    frame, "Перед обновлением закройте Minecraft"
                 )
                 return@launch
             }
@@ -250,11 +247,10 @@ fun setupWindow() {
             buttonPanel.repaint()
 
             try {
-                val updates = withContext(Dispatchers.IO) { requestUpdates(resolvedVersion) }
-                    ?: run {
-                        JOptionPane.showMessageDialog(frame, "Обновление не требуется")
-                        return@launch
-                    }
+                val updates = withContext(Dispatchers.IO) { requestUpdates(resolvedVersion) } ?: run {
+                    JOptionPane.showMessageDialog(frame, "Обновление не требуется")
+                    return@launch
+                }
 
                 if (backupCheckbox.isSelected) {
                     println("Резервное копирование файлов")
@@ -278,6 +274,56 @@ fun setupWindow() {
                                     UpdateProgress.ApplyingFiles -> {
                                         progressBar.isIndeterminate = true
                                         progressBar.string = "Установка..."
+                                    }
+                                }
+                            }
+                        },
+                        conflictDecision = { conflict ->
+                            withContext(Dispatchers.Swing) {
+                                when (conflict) {
+                                    UpdateConflict.OptionsFile -> {
+                                        val replace = JOptionPane.showConfirmDialog(
+                                            frame,
+                                            "Обновление содержит options.txt. Перезаписать текущие настройки Minecraft?",
+                                            "Замена настроек",
+                                            JOptionPane.YES_NO_OPTION,
+                                            JOptionPane.WARNING_MESSAGE,
+                                        ) == JOptionPane.YES_OPTION
+                                        if (replace) ReplacementDecision.REPLACE else ReplacementDecision.KEEP
+                                    }
+
+                                    is UpdateConflict.Mod -> {
+                                        val installed = conflict.installedFiles.zip(conflict.installedVersions)
+                                            .joinToString("\n") { (file, version) ->
+                                                "• $file — ${version ?: "версия неизвестна"}"
+                                            }
+                                        val updated = conflict.updateFiles.joinToString("\n") { file ->
+                                            "• $file — ${conflict.updateVersion ?: "версия неизвестна"}"
+                                        }
+                                        val options = arrayOf("Заменить", "Заменить все конфликтующие", "Оставить")
+                                        when (JOptionPane.showOptionDialog(
+                                            frame,
+                                            """
+                                                |В обновлении найден мод «${conflict.displayName}» (id: ${conflict.identifier}).
+                                                |Установлено:
+                                                |$installed
+                                                |
+                                                |В обновлении:
+                                                |$updated
+                                                |
+                                                |Удалить установленный мод и поставить версию из обновления?
+                                                """.trimMargin(),
+                                            "Замена мода",
+                                            JOptionPane.DEFAULT_OPTION,
+                                            JOptionPane.WARNING_MESSAGE,
+                                            null,
+                                            options,
+                                            options[0],
+                                        )) {
+                                            0 -> ReplacementDecision.REPLACE
+                                            1 -> ReplacementDecision.REPLACE_ALL_MODS
+                                            else -> ReplacementDecision.KEEP
+                                        }
                                     }
                                 }
                             }
@@ -310,21 +356,15 @@ fun setupWindow() {
     browseButton.addActionListener {
         val chooser = JFileChooser()
 
-        chooser.fileSelectionMode =
-            JFileChooser.DIRECTORIES_ONLY
+        chooser.fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
 
-        if (chooser.showOpenDialog(frame) ==
-            JFileChooser.APPROVE_OPTION
-        ) {
-            pathField.text =
-                chooser.selectedFile.absolutePath
+        if (chooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
+            pathField.text = chooser.selectedFile.absolutePath
         }
     }
 
     val stream = PrintStream(
-        JTextAreaOutputStream(console),
-        true,
-        Charsets.UTF_8
+        JTextAreaOutputStream(console), true, Charsets.UTF_8
     )
     System.setOut(stream)
     System.setErr(stream)

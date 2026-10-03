@@ -118,6 +118,7 @@ suspend fun requestDownloadUpdate(
     gamePath: File,
     updates: RequiredUpdates,
     progressListener: ProgressListener,
+    conflictDecision: suspend (UpdateConflict) -> ReplacementDecision,
 ): Boolean = withContext(Dispatchers.IO) {
     val (modpackVersion, hosts) = updates
 
@@ -212,13 +213,40 @@ suspend fun requestDownloadUpdate(
             extractProgress.complete()
         }
 
-    progressListener(UpdateProgress.ApplyingFiles)
     downloadFile.delete()
     println("Файлы распакованы")
 
+    val conflictResolution = resolveUpdateConflicts(
+        gameDirectory = gameDirectory,
+        stagedDirectory = rootOutput,
+        conflictDecision = conflictDecision,
+    )
+    val skippedUpdateFiles = conflictResolution.skippedUpdateFiles.toMutableSet()
+    val protectedGameFiles = conflictResolution.protectedGameFiles.toMutableSet()
+
+    conflictResolution.modReplacements.forEach { replacement ->
+        var deletionFailed = false
+        replacement.installedFiles.forEach { installedFile ->
+            try {
+                Files.deleteIfExists(installedFile)
+                println("[-] ${gameDirectory.toPath().relativize(installedFile)}")
+            } catch (e: Exception) {
+                deletionFailed = true
+                errors += installedFile.toString()
+                println("[!] Не удалось удалить $installedFile: ${e.message}")
+            }
+        }
+        if (deletionFailed) {
+            skippedUpdateFiles.addAll(replacement.updateFiles)
+            protectedGameFiles.addAll(replacement.installedFiles)
+        }
+    }
+
+    progressListener(UpdateProgress.ApplyingFiles)
     Files.walk(rootOutput.toPath()).use { paths ->
         paths
             .filter { Files.isRegularFile(it) }
+            .filter { it.toAbsolutePath().normalize() !in skippedUpdateFiles }
             .forEach { source ->
                 val relative = rootOutput.toPath().relativize(source)
                 val target = gameDirectory.toPath().resolve(relative)
@@ -244,6 +272,10 @@ suspend fun requestDownloadUpdate(
                 if (!fileToDelete.exists()) return@forEach
                 if (!fileToDelete.toPath().startsWith(gameDirectory.toPath())) {
                     println("[!] Файл нельзя удалить по пути: $line")
+                    return@forEach
+                }
+                if (fileToDelete.toPath().toAbsolutePath().normalize() in protectedGameFiles) {
+                    println("[=] Сохранён $line")
                     return@forEach
                 }
                 println("[-] $line")
@@ -274,7 +306,6 @@ suspend fun requestDownloadUpdate(
         versionFile.writeText(modpackVersion)
     }
 
-    versionFile.writeText(modpackVersion)
     println("Обновление модпака завершено")
     progressListener(UpdateProgress.Determinate(100))
     failed
