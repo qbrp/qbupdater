@@ -281,17 +281,6 @@ fun setupWindow() {
                         conflictDecision = { conflict ->
                             withContext(Dispatchers.Swing) {
                                 when (conflict) {
-                                    UpdateConflict.OptionsFile -> {
-                                        val replace = JOptionPane.showConfirmDialog(
-                                            frame,
-                                            "Обновление содержит options.txt. Перезаписать текущие настройки Minecraft?",
-                                            "Замена настроек",
-                                            JOptionPane.YES_NO_OPTION,
-                                            JOptionPane.WARNING_MESSAGE,
-                                        ) == JOptionPane.YES_OPTION
-                                        if (replace) ReplacementDecision.REPLACE else ReplacementDecision.KEEP
-                                    }
-
                                     is UpdateConflict.Mod -> {
                                         val installed = conflict.installedFiles.zip(conflict.installedVersions)
                                             .joinToString("\n") { (file, version) ->

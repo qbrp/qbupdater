@@ -12,8 +12,6 @@ import java.util.Locale
 import java.util.zip.ZipFile
 
 sealed interface UpdateConflict {
-    data object OptionsFile : UpdateConflict
-
     data class Mod(
         val identifier: String,
         val displayName: String,
@@ -65,11 +63,11 @@ internal suspend fun resolveUpdateConflicts(
 
     val installedOptions = gameDirectory.resolve("options.txt")
     val stagedOptions = stagedDirectory.resolve("options.txt")
-    if (installedOptions.isFile && stagedOptions.isFile &&
-        conflictDecision(UpdateConflict.OptionsFile) == ReplacementDecision.KEEP
-    ) {
-        skippedUpdateFiles.add(stagedOptions.normalizedPath())
+    if (stagedOptions.isFile) {
         protectedGameFiles.add(installedOptions.normalizedPath())
+        if (!mergeMissingOptions(installedOptions, stagedOptions)) {
+            skippedUpdateFiles.add(stagedOptions.normalizedPath())
+        }
     }
 
     val installedModsDirectory = gameDirectory.resolve("mods")
@@ -78,7 +76,9 @@ internal suspend fun resolveUpdateConflicts(
         return ConflictResolution(skippedUpdateFiles, protectedGameFiles, modReplacements)
     }
 
+    val scheduledDeletions = readScheduledDeletions(gameDirectory, stagedDirectory)
     val installedMods = scanMods(installedModsDirectory)
+        .filterNot { it.path in scheduledDeletions }
     val updateMods = scanMods(stagedModsDirectory)
     val duplicateUpdateIds = updateMods
         .groupBy { it.metadata.identifier }
@@ -138,6 +138,48 @@ internal suspend fun resolveUpdateConflicts(
     }
 
     return ConflictResolution(skippedUpdateFiles, protectedGameFiles, modReplacements)
+}
+
+private fun mergeMissingOptions(installedOptions: File, stagedOptions: File): Boolean {
+    val installedText = installedOptions.takeIf { it.isFile }?.readText().orEmpty()
+    val existingKeys = installedText.lineSequence()
+        .mapNotNull(::optionKey)
+        .toMutableSet()
+    val missingLines = stagedOptions.readLines().filter { line ->
+        optionKey(line)?.let(existingKeys::add) == true
+    }
+
+    if (missingLines.isEmpty()) return false
+
+    val lineSeparator = if ("\r\n" in installedText) "\r\n" else "\n"
+    val mergedText = buildString {
+        append(installedText)
+        if (installedText.isNotEmpty() && !installedText.endsWith("\n") && !installedText.endsWith("\r")) {
+            append(lineSeparator)
+        }
+        append(missingLines.joinToString(lineSeparator))
+    }
+    stagedOptions.writeText(mergedText)
+    return true
+}
+
+private fun optionKey(line: String): String? {
+    val separatorIndex = line.indexOf(':')
+    if (separatorIndex <= 0) return null
+    return line.substring(0, separatorIndex).trim().takeIf { it.isNotEmpty() }
+}
+
+private fun readScheduledDeletions(gameDirectory: File, stagedDirectory: File): Set<Path> {
+    val deletionsFile = stagedDirectory.resolve(".deleted")
+    if (!deletionsFile.isFile) return emptySet()
+
+    val gamePath = gameDirectory.canonicalFile.normalizedPath()
+    return deletionsFile.readLines()
+        .asSequence()
+        .filter(String::isNotBlank)
+        .map { gameDirectory.resolve(it).canonicalFile.normalizedPath() }
+        .filter { it.startsWith(gamePath) }
+        .toSet()
 }
 
 private fun scanMods(directory: File): List<ModFile> {
